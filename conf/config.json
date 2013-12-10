@@ -1,10 +1,11 @@
 {
-	"port": 8888,
+	"port": 8080,
 	"host": "localhost",
 	"mailer" : {
-	    "user": "ak@sourcehut.com",
-	    "password": "0sb-gKjWFJ0IysuKOg8GAw",
+		"service": "",  
+	    "user": "",
+	    "password": "",
 
-	    "to": "ak@sourcehut.com"
+	    "to": ""
 	}
 }
