@@ -110,7 +110,7 @@ var SampleApp = function() {
 
         app.get('/', routes.index);
         app.get('/index.html', routes.index);
-        app.get('/signup', routes.index);
+        app.get('/signup', routes.signupGet);
         
         // set up mailer routes
         require('./lib/routes/mailer.js')(app, db, '/mail');
