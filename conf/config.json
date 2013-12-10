@@ -3,6 +3,8 @@
 	"host": "localhost",
 	"mailer" : {
 	    "user": "ak@sourcehut.com",
-	    "password": "0sb-gKjWFJ0IysuKOg8GAw"
+	    "password": "0sb-gKjWFJ0IysuKOg8GAw",
+
+	    "to": "ak@sourcehut.com"
 	}
 }
