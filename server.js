@@ -1,11 +1,22 @@
 #!/bin/env node
-//  OpenShift sample Node application
+ 
 var express = require('express');
-var fs      = require('fs');
 
+//initializing nconf
+var nconf = require('nconf');
+nconf.file({file: './conf/config.json'});
+global.nconf = nconf;
+
+var http = require('http');
+var path = require('path');
+
+var routes = require('./lib/routes');
+
+var mongo = require('mongodb');
+var mongoClient = mongo.MongoClient; 
 
 /**
- *  Define the sample application.
+ *  Define the application.
  */
 var SampleApp = function() {
 
@@ -22,36 +33,32 @@ var SampleApp = function() {
      */
     self.setupVariables = function() {
         //  Set the environment variables we need.
-        self.ipaddress = process.env.OPENSHIFT_NODEJS_IP;
-        self.port      = process.env.OPENSHIFT_NODEJS_PORT || 8080;
+        var port = nconf.get('port') || 80;
+        port = process.env.OPENSHIFT_NODEJS_PORT || port;
+        self.port = port;
 
-        if (typeof self.ipaddress === "undefined") {
-            //  Log errors on OpenShift but continue w/ 127.0.0.1 - this
-            //  allows us to run/test the app locally.
-            console.warn('No OPENSHIFT_NODEJS_IP var, using 127.0.0.1');
-            self.ipaddress = "127.0.0.1";
-        };
-    };
+        var host = nconf.get('host') || "127.0.0.1";
+        host = process.env.OPENSHIFT_NODEJS_IP || host;
+        self.ipaddress = host;
 
+        var dbUser = nconf.get('db_user') || "";
+        var dbPassword = nconf.get('db_password') || "";
+        var dbHost = nconf.get('db_host') || "127.0.0.1";
+        var dbPort = nconf.get('db_port') || "27017";
+        var dbName = nconf.get('db_name') || "database";
 
-    /**
-     *  Populate the cache.
-     */
-    self.populateCache = function() {
-        if (typeof self.zcache === "undefined") {
-            self.zcache = { 'index.html': '' };
+        // if OPENSHIFT env variables are present, use the available connection info:
+        if (process.env.OPENSHIFT_MONGODB_DB_PASSWORD) {
+
+            dbUser = process.env.OPENSHIFT_MONGODB_DB_USERNAME || dbUser;
+            dbPassword = process.env.OPENSHIFT_MONGODB_DB_PASSWORD || dbPassword;
+            dbHost = process.env.OPENSHIFT_MONGODB_DB_HOST || dbHost;
+            dbPort = process.env.OPENSHIFT_MONGODB_DB_PORT || dbPort;
+            dbName = process.env.OPENSHIFT_APP_NAME || dbName;
         }
 
-        //  Local cache for static content.
-        self.zcache['index.html'] = fs.readFileSync('./index.html');
+        self.connectionString = 'mongodb://' + (dbUser ? (dbUser + ":" + dbPassword + "@") : "") + dbHost + ':' + dbPort + '/' + dbName;
     };
-
-
-    /**
-     *  Retrieve entry (content) from cache.
-     *  @param {string} key  Key identifying content to retrieve from cache.
-     */
-    self.cache_get = function(key) { return self.zcache[key]; };
 
 
     /**
@@ -59,28 +66,32 @@ var SampleApp = function() {
      *  Terminate server on receipt of the specified signal.
      *  @param {string} sig  Signal to terminate on.
      */
-    self.terminator = function(sig){
+    self.terminator = function(sig) {
         if (typeof sig === "string") {
-           console.log('%s: Received %s - terminating sample app ...',
-                       Date(Date.now()), sig);
-           process.exit(1);
+            console.log('%s: Received %s - terminating sample app ...',
+                Date(Date.now()), sig);
+            process.exit(1);
         }
-        console.log('%s: Node server stopped.', Date(Date.now()) );
+        console.log('%s: Node server stopped.', Date(Date.now()));
     };
 
 
     /**
      *  Setup termination handlers (for exit and a list of signals).
      */
-    self.setupTerminationHandlers = function(){
+    self.setupTerminationHandlers = function() {
         //  Process on exit and signals.
-        process.on('exit', function() { self.terminator(); });
+        process.on('exit', function() {
+            self.terminator();
+        });
 
         // Removed 'SIGPIPE' from the list - bugz 852598.
         ['SIGHUP', 'SIGINT', 'SIGQUIT', 'SIGILL', 'SIGTRAP', 'SIGABRT',
-         'SIGBUS', 'SIGFPE', 'SIGUSR1', 'SIGSEGV', 'SIGUSR2', 'SIGTERM'
+            'SIGBUS', 'SIGFPE', 'SIGUSR1', 'SIGSEGV', 'SIGUSR2', 'SIGTERM'
         ].forEach(function(element, index, array) {
-            process.on(element, function() { self.terminator(element); });
+            process.on(element, function() {
+                self.terminator(element);
+            });
         });
     };
 
@@ -89,36 +100,76 @@ var SampleApp = function() {
     /*  App server functions (main app logic here).                       */
     /*  ================================================================  */
 
-    /**
-     *  Create the routing table entries + handlers for the application.
-     */
-    self.createRoutes = function() {
-        self.routes = { };
+    self.setupRoutes = function(app, db) {
+        // CORS headers
+        app.all('/', function(req, res, next) {
+          res.header("Access-Control-Allow-Origin", "*");
+          res.header("Access-Control-Allow-Headers", "X-Requested-With");
+          next();
+         });        
 
-        self.routes['/asciimo'] = function(req, res) {
-            var link = "http://i.imgur.com/kmbjB.png";
-            res.send("<html><body><img src='" + link + "'></body></html>");
-        };
-
-        self.routes['/'] = function(req, res) {
-            res.setHeader('Content-Type', 'text/html');
-            res.send(self.cache_get('index.html') );
-        };
+        app.get('/', routes.index);
+        app.get('/index.html', routes.index);
+        
+        // set up mailer routes
+        require('./lib/routes/mailer.js')(app, db, '/mail');
     };
-
 
     /**
      *  Initialize the server (express) and create the routes and register
      *  the handlers.
      */
     self.initializeServer = function() {
-        self.createRoutes();
-        self.app = express.createServer();
+        //self.createRoutes();
+        self.app = express(); //.createServer();
+
+        // all environments
+        self.app.set('port', process.env.OPENSHIFT_NODEJS_PORT || 8080);
+
+        self.app.set('view options'); //, {layout:false});
+        self.app.set('views', __dirname + '/views');
+        self.app.set('view engine', 'js');
+        self.app.engine('js', require('hbs').__express);
+
+        self.app.set("view engine", "html");
+        self.app.engine('html', require('hbs').__express);
+
+        self.app.use(express.favicon());
+        self.app.use(express.logger('dev'));
+        //self.app.use(express.bodyParser());
+        self.app.use(express.urlencoded());
+        //self.app.use(express.methodOverride());
+        self.app.use(express.cookieParser('your secret here'));
+        self.app.use(express.session());
+        self.app.use(self.app.router);
+        //CORS headers for static files
+        self.app.use(function(req, res, next) {
+          res.header("Access-Control-Allow-Origin", "*");
+          res.header("Access-Control-Allow-Headers", "X-Requested-With");
+          next();
+        });
+        self.app.use(express.static(path.join(__dirname, 'public')));
+
+        // development only
+        if ('development' == self.app.get('env')) {
+            self.app.use(express.errorHandler());
+        }
 
         //  Add handlers for the app (from the routes).
+        /*
         for (var r in self.routes) {
             self.app.get(r, self.routes[r]);
         }
+        */
+        self.db = null;
+        console.log('Connection String: ' + self.connectionString);
+
+        mongoClient.connect(self.connectionString,
+            function(err, db) {
+                if (err) throw err;
+                self.db = db;
+                self.setupRoutes(self.app, self.db);
+            });
     };
 
 
@@ -127,7 +178,7 @@ var SampleApp = function() {
      */
     self.initialize = function() {
         self.setupVariables();
-        self.populateCache();
+        //self.populateCache();
         self.setupTerminationHandlers();
 
         // Create the express server and routes.
@@ -140,15 +191,16 @@ var SampleApp = function() {
      */
     self.start = function() {
         //  Start the app on the specific interface (and port).
-        self.app.listen(self.port, self.ipaddress, function() {
+        self.server = http.createServer(self.app);
+        console.log('port:' + self.port + ', ip: ' + self.ipaddress);
+        //self.io = socket.listen(self.server);
+        self.server.listen(self.port, self.ipaddress, function() {
             console.log('%s: Node server started on %s:%d ...',
-                        Date(Date.now() ), self.ipaddress, self.port);
+                Date(Date.now()), self.ipaddress, self.port);
         });
     };
 
-};   /*  Sample Application.  */
-
-
+}; /*  View Application.  */
 
 /**
  *  main():  Main code.
@@ -156,4 +208,3 @@ var SampleApp = function() {
 var zapp = new SampleApp();
 zapp.initialize();
 zapp.start();
-
